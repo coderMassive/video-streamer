@@ -24,7 +24,8 @@ def stream_video(sock: socket.socket, client_ip: str, directory: str, video_name
         if not ok:
             break
 
-        success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 40])
+        frame = cv2.resize(frame, (640, 360))
+        success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 30])
         if not success:
             continue
 
