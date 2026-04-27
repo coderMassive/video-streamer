@@ -1,95 +1,66 @@
 import cv2
-import pickle
 import socket
+import pickle
 import sys
-import json
 import threading
-
-def stringed_videos(videos: list[str], start_index: int=0):
-    output = ""
-
-    for i, video in enumerate(videos):
-        output += f"{start_index + i + 1}: {video}\n"
-    output += f"Got {start_index + 1} to {start_index + len(videos)} video names."
-    return output
+import time
+from collections import deque
 
 def video_playback(host_ip, host_port):
-    print("Playing video!")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('0.0.0.0', 0))
+    cache = deque()
+    running = True
+    max_cache = 120
+    min_cache = 30
 
-    i = 0
-    speed = 1
-    paused = False
-    first_frame = False
+    def receive_frames():
+        nonlocal running
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("0.0.0.0", 0))
+        sock.sendto(b"start", (host_ip, host_port))
+
+        while running:
+            if len(cache) >= max_cache:
+                time.sleep(0.002)
+                continue
+
+            data, _ = sock.recvfrom(65536)
+            encoded = pickle.loads(data)
+            frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+            if frame is not None:
+                cache.append(frame)
+        sock.close()
+
+    threading.Thread(target=receive_frames, daemon=True).start()
+
+    while len(cache) < min_cache:
+        time.sleep(0.001)
 
     while True:
-        request = {"frame": int(i)}
-        json_bytes = json.dumps(request).encode()
-        sock.sendto(json_bytes, (host_ip, host_port))
-
-        data, _ = sock.recvfrom(65536)
-        encoded = pickle.loads(data)
-        frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-
-        if frame is None:
+        if not cache:
+            time.sleep(0.001)
             continue
 
+        frame = cache.popleft()
         cv2.imshow("Frame", frame)
+        key = cv2.waitKey(60) & 0xFF
+        if key == ord("q"):
+            running = False
+            break
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("k"):
-            paused = not paused
-        elif key == ord("j"):
-            i -= 150
-        elif key == ord("l"):
-            i += 150
-        elif key == ord("i"):
-            speed = 2
-        elif key == ord("m"):
-            speed = 0.5
-        elif key == ord(";"):
-            speed = 1
-
-        if not paused:
-            i += speed
-
-        if first_frame == False:
-            first_frame = True
-        else:
-            try:
-                cv2.getWindowProperty('Frame', cv2.WND_PROP_VISIBLE)
-            except:
-                break
-
-    sock.sendto(json.dumps({"stop": True}).encode(), (host_ip, host_port))
     cv2.destroyAllWindows()
 
 def main(host_ip, host_port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((host_ip, host_port))
 
-    try:
-        while True:
-            command = input("> ")
-            match command.strip().split():
-                case ["GET", *args]:
-                    sock.send(pickle.dumps(("GET", ' '.join(args))))
-                    port = int(pickle.loads(sock.recv(1024)))
-                    video_playback_thread = threading.Thread(target=video_playback, args=(host_ip, port))
-                    video_playback_thread.start()
-                case ["DIR", *args]:
-                    index = args[0] if len(args) > 0 else 0
-                    count = args[1] if len(args) > 1 else 64
-                    sock.send(pickle.dumps(("DIR", index, count)))
-                    message = pickle.loads(sock.recv(65536))
-                    print(stringed_videos(message, index))
-                case ["EXIT"]:
-                    break
-                case _:
-                    print("Invalid command.")
-    except KeyboardInterrupt:
-        pass
+    while True:
+        cmd = input("> ")
+        if cmd.startswith("GET "):
+            sock.send(pickle.dumps(("GET", cmd[4:])))
+            port = pickle.loads(sock.recv(1024))
+            video_playback(host_ip, port)
+        elif cmd == "EXIT":
+            break
 
     sock.close()
 
