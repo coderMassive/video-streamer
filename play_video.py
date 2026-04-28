@@ -21,16 +21,19 @@ def video_playback(host_ip, host_port):
     i = 0
     speed = 1
     paused = False
+    just_fetch = False
     first_frame = False
 
     while True:
-        request = {"frame": int(i)}
-        json_bytes = json.dumps(request).encode()
-        sock.sendto(json_bytes, (host_ip, host_port))
+        if not paused or just_fetch:
+            request = {"frame": int(i)}
+            json_bytes = json.dumps(request).encode()
+            sock.sendto(json_bytes, (host_ip, host_port))
 
-        data, _ = sock.recvfrom(65536)
-        encoded = pickle.loads(data)
-        frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+            data, _ = sock.recvfrom(65536)
+            encoded = pickle.loads(data)
+            frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+            just_fetch = False
 
         if frame is None:
             continue
@@ -42,8 +45,10 @@ def video_playback(host_ip, host_port):
             paused = not paused
         elif key == ord("j"):
             i -= 150
+            just_fetch = True
         elif key == ord("l"):
             i += 150
+            just_fetch = True
         elif key == ord("i"):
             speed = 2
         elif key == ord("m"):
