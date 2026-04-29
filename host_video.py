@@ -6,8 +6,23 @@ import threading
 from pathlib import Path
 
 def stream_video(sock, client_addr, directory, video_name):
-    cap = cv2.VideoCapture((Path(directory) / video_name).absolute())
+    paused = False
+    cap = cv2.VideoCapture(str((Path(directory) / video_name).absolute()))
+
+    def handle_messages():
+        nonlocal paused
+        while True:
+            data, addr = sock.recvfrom(1024)
+            if addr == client_addr:
+                command = data.decode("utf-8")
+                if command == "pause":
+                    paused = not paused
+
+    threading.Thread(target=handle_messages, daemon=True).start()
+
     while True:
+        if paused:
+            continue
         ok, frame = cap.read()
         if not ok:
             break
@@ -16,6 +31,7 @@ def stream_video(sock, client_addr, directory, video_name):
         if not success:
             continue
         sock.sendto(pickle.dumps(encoded), client_addr)
+
     cap.release()
 
 def handle_client(client_sock, address, video_sock, videos_directory):
