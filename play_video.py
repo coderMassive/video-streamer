@@ -3,7 +3,6 @@ import pickle
 import socket
 import sys
 import json
-import threading
 
 def stringed_videos(videos: list[str], start_index: int=0):
     output = ""
@@ -55,6 +54,8 @@ def video_playback(host_ip, host_port):
             speed = 0.5
         elif key == ord(";"):
             speed = 1
+        elif key == ord("q"):
+            break
 
         if not paused:
             i += speed
@@ -81,8 +82,7 @@ def main(host_ip, host_port):
                 case ["GET", *args]:
                     sock.send(pickle.dumps(("GET", ' '.join(args))))
                     port = int(pickle.loads(sock.recv(1024)))
-                    video_playback_thread = threading.Thread(target=video_playback, args=(host_ip, port))
-                    video_playback_thread.start()
+                    video_playback(host_ip, port)
                 case ["DIR", *args]:
                     index = args[0] if len(args) > 0 else 0
                     count = args[1] if len(args) > 1 else 64
