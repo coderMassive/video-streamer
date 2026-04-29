@@ -6,11 +6,16 @@ import json
 import threading
 
 from pathlib import Path
+from moviepy import VideoFileClip
 from itertools import islice
 
 def stream_video(sock: socket.socket, client_ip: str, directory: str, video_name: str):
-    cap = cv2.VideoCapture((Path(directory) / video_name).absolute())
-    fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
+    file_path = (Path(directory) / video_name).absolute()
+    audio = VideoFileClip(file_path).audio.to_soundarray(fps=44100)
+    cap = cv2.VideoCapture(file_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS)) or 60
+
+    audio_fps_ratio = 44100 // fps
 
     while True:
         data, addr = sock.recvfrom(1024)
@@ -25,11 +30,12 @@ def stream_video(sock: socket.socket, client_ip: str, directory: str, video_name
             break
 
         frame = cv2.resize(frame, (640, 360))
+        audio_segment = audio[data["frame"] * audio_fps_ratio:(data["frame"]+1)*audio_fps_ratio]
         success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 30])
         if not success:
             continue
 
-        payload = pickle.dumps(encoded)
+        payload = pickle.dumps((encoded, audio_segment, 44100))
         sock.sendto(payload, (client_ip, addr[1]))
 
     cap.release()

@@ -5,6 +5,8 @@ import sys
 import json
 import threading
 
+import sounddevice as sd
+
 def stringed_videos(videos: list[str], start_index: int=0):
     output = ""
 
@@ -32,7 +34,7 @@ def video_playback(host_ip, host_port):
 
             data, _ = sock.recvfrom(65536)
             encoded = pickle.loads(data)
-            frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+            frame = cv2.imdecode(encoded[0], cv2.IMREAD_COLOR)
             just_fetch = False
 
         if frame is None:
@@ -40,6 +42,8 @@ def video_playback(host_ip, host_port):
 
         cv2.imshow("Frame", frame)
 
+        if not paused:
+            sd.play(encoded[1], encoded[2])
         key = cv2.waitKey(1) & 0xFF
         if key == ord("k"):
             paused = not paused
