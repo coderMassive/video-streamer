@@ -1,10 +1,12 @@
 import cv2
-import pickle
 import socket
+import pickle
 import sys
-import json
+import threading
+import time
 
 import sounddevice as sd
+from collections import deque
 
 def stringed_videos(videos: list[str], start_index: int=0):
     output = ""
@@ -15,74 +17,125 @@ def stringed_videos(videos: list[str], start_index: int=0):
     return output
 
 def video_playback(host_ip, host_port):
-    print("Playing video!")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('0.0.0.0', 0))
-
-    i = 0
-    speed = 1
+    cache = deque()
+    running = True
     paused = False
-    just_fetch = False
-    first_frame = False
+    sender_paused = False
 
-    stream: sd.OutputStream = None
+    max_cache = 120
+    min_cache = 30
 
-    while True:
-        if not paused or just_fetch:
-            request = {"frame": int(i)}
-            json_bytes = json.dumps(request).encode()
-            sock.sendto(json_bytes, (host_ip, host_port))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    sock.bind(("0.0.0.0", 0))
+    sock.sendto(b"start", (host_ip, host_port))
 
-            data, _ = sock.recvfrom(65536)
-            audio_data, _ = sock.recvfrom(65536)
-            encoded = pickle.loads(data)
-            audio_decoded = pickle.loads(audio_data)
-            frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-            just_fetch = False
-            sd.stop()
+    def receive_frames():
+        nonlocal running
 
-            if stream is None:
-                stream = sd.OutputStream(samplerate=audio_decoded[1], channels=audio_decoded[2])
-                stream.start()
-            stream.write(audio_decoded[0])
+        while running:
+            try:
+                data, _ = sock.recvfrom(65536)
+                audio_data, _ = sock.recvfrom(65536)
+                payload = pickle.loads(data)
+                audio_payload = pickle.loads(audio_data)
 
-        if frame is None:
+                if isinstance(payload, tuple) and len(payload) == 2:
+                    frame_index, encoded = payload
+                else:
+                    frame_index = None
+                    encoded = payload
+
+                frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+
+                # Always drain the socket. If cache is full, drop newest arrivals.
+                if len(cache) < max_cache:
+                    cache.append((frame_index, frame, audio_payload[0], audio_payload[1]))
+
+            except OSError:
+                break
+            except Exception:
+                continue
+
+        sock.close()
+
+    threading.Thread(target=receive_frames, daemon=True).start()
+
+    while running and len(cache) < min_cache:
+        time.sleep(0.001)
+
+    last_frame_index = None
+
+    while running:
+        if len(cache) >= max_cache - 5 and not sender_paused:
+            sock.sendto(b"pause", (host_ip, host_port))
+            sender_paused = True
+        elif len(cache) <= min_cache and sender_paused:
+            sock.sendto(b"resume", (host_ip, host_port))
+            sender_paused = False
+
+        if paused:
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord("k"):
+                paused = False
+            elif key == ord("j"):
+                sock.sendto(b"back", (host_ip, host_port))
+                cache.clear()
+                last_frame_index = None
+            elif key == ord("l"):
+                sock.sendto(b"forward", (host_ip, host_port))
+                cache.clear()
+                last_frame_index = None
+            elif key == ord("q"):
+                running = False
             continue
 
+        if not cache:
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("k"):
+                paused = True
+            elif key == ord("j"):
+                sock.sendto(b"back", (host_ip, host_port))
+                cache.clear()
+                last_frame_index = None
+            elif key == ord("l"):
+                sock.sendto(b"forward", (host_ip, host_port))
+                cache.clear()
+                last_frame_index = None
+            elif key == ord("q"):
+                running = False
+            time.sleep(0.001)
+            continue
+
+        frame_index, frame, audio_data, audio_frequency = cache.popleft()
+
+        if frame_index is not None and last_frame_index is not None:
+            if frame_index != last_frame_index + 1:
+                print(f"frame jump: {last_frame_index} -> {frame_index}")
+
+        last_frame_index = frame_index
+
+        print("cache size:", len(cache))
         cv2.imshow("Frame", frame)
-        key = cv2.waitKey(1) & 0xFF
+        sd.play(audio_data, audio_frequency)
+
+        key = cv2.waitKey(33) & 0xFF
         if key == ord("k"):
-            paused = not paused
+            paused = True
         elif key == ord("j"):
-            i -= 150
-            just_fetch = True
+            sock.sendto(b"back", (host_ip, host_port))
+            cache.clear()
+            last_frame_index = None
         elif key == ord("l"):
-            i += 150
-            just_fetch = True
-        elif key == ord("i"):
-            speed = 2
-        elif key == ord("m"):
-            speed = 0.5
-        elif key == ord(";"):
-            speed = 1
+            sock.sendto(b"forward", (host_ip, host_port))
+            cache.clear()
+            last_frame_index = None
+        elif key == ord("q"):
+            running = False
 
-        if not paused:
-            i += speed
-
-        if first_frame == False:
-            first_frame = True
-        else:
-            try:
-                cv2.getWindowProperty('Frame', cv2.WND_PROP_VISIBLE)
-            except:
-                break
-
-    sock.sendto(json.dumps({"stop": True}).encode(), (host_ip, host_port))
     cv2.destroyAllWindows()
-
-    if stream is not None:
-        stream.stop()
-        stream.close()
 
 
 def main(host_ip, host_port):
@@ -111,6 +164,7 @@ def main(host_ip, host_port):
         pass
 
     sock.close()
+
 
 if __name__ == "__main__":
     main(sys.argv[1], int(sys.argv[2]))
