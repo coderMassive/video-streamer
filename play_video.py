@@ -38,9 +38,9 @@ def video_playback(host_ip, host_port):
         while running:
             try:
                 data, _ = sock.recvfrom(65536)
-                audio_data, _ = sock.recvfrom(65536)
-                payload = pickle.loads(data)
-                audio_payload = pickle.loads(audio_data)
+                raw_payload = pickle.loads(data)
+                payload = raw_payload[:2]
+                audio_payload = raw_payload[2]
 
                 if isinstance(payload, tuple) and len(payload) == 2:
                     frame_index, encoded = payload
@@ -121,6 +121,10 @@ def video_playback(host_ip, host_port):
 
         print("cache size:", len(cache))
         cv2.imshow("Frame", frame)
+        if stream is not None and (stream.samplerate != audio_payload[1] or stream.channels != audio_payload[2]):
+            stream.stop()
+            stream.close()
+            stream = None
         if stream is None:
             stream = sd.OutputStream(samplerate=audio_payload[1], channels=audio_payload[2])
             stream.start()
@@ -138,6 +142,7 @@ def video_playback(host_ip, host_port):
             cache.clear()
             last_frame_index = None
         elif key == ord("q"):
+            sock.sendto(b"stop", (host_ip, host_port))
             running = False
 
     cv2.destroyAllWindows()

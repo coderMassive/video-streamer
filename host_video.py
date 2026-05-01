@@ -12,11 +12,12 @@ from itertools import islice
 def stream_video(sock, client_ip, directory, video_name):
     file_path = (Path(directory) / video_name).absolute()
     paused = False
+    halt = False
     cap = cv2.VideoCapture(file_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 60
     cap_lock = threading.Lock()
 
-    AUDIO_FREQUENCY = 32000
+    AUDIO_FREQUENCY = 22050
     audio_clip = VideoFileClip(file_path).audio
     audio = audio_clip.to_soundarray(fps=AUDIO_FREQUENCY).astype('float32')
     audio_fps_ratio = AUDIO_FREQUENCY // fps
@@ -26,9 +27,15 @@ def stream_video(sock, client_ip, directory, video_name):
     def handle_messages():
         nonlocal paused
         nonlocal user_addr
+        nonlocal halt
 
         while True:
-            data, addr = sock.recvfrom(1024)
+            sock.settimeout(5.0)
+            try:
+                data, addr = sock.recvfrom(1024)
+            except TimeoutError:
+                halt = True
+                break
             if (user_addr is None and addr[0] == client_ip) or user_addr == addr:
                 user_addr = addr
                 command = data.decode("utf-8")
@@ -44,11 +51,14 @@ def stream_video(sock, client_ip, directory, video_name):
                     with cap_lock:
                         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                         cap.set(cv2.CAP_PROP_POS_FRAMES, current + 60)
+                elif command == "stop":
+                    halt = True
+                    break
 
     threading.Thread(target=handle_messages, daemon=True).start()
 
     frame_index = 0
-    while True:
+    while not halt:
         if paused or not user_addr:
             time.sleep(0.01)
             continue
@@ -59,13 +69,13 @@ def stream_video(sock, client_ip, directory, video_name):
             break
 
         frame = cv2.resize(frame, (640, 360))
-        audio_segment = audio[frame_index * audio_fps_ratio:int((frame_index + 1)*audio_fps_ratio)]
+        current_frame_id = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        audio_segment = audio[current_frame_id * audio_fps_ratio:int((current_frame_id + 1)*audio_fps_ratio)]
         success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 30])
         if not success:
             continue
 
-        sock.sendto(pickle.dumps((frame_index, encoded)), user_addr)
-        sock.sendto(pickle.dumps((audio_segment, AUDIO_FREQUENCY, audio_clip.nchannels)), user_addr)
+        sock.sendto(pickle.dumps((frame_index, encoded, (audio_segment, AUDIO_FREQUENCY, audio_clip.nchannels))), user_addr)
         frame_index += 1
     
     cap.release()
