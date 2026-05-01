@@ -4,10 +4,12 @@ import pickle
 import sys
 import threading
 from pathlib import Path
+import time
 
 def stream_video(sock, client_addr, directory, video_name):
     paused = False
     cap = cv2.VideoCapture(str((Path(directory) / video_name).absolute()))
+    cap_lock = threading.Lock()
 
     def handle_messages():
         nonlocal paused
@@ -16,23 +18,38 @@ def stream_video(sock, client_addr, directory, video_name):
             if addr == client_addr:
                 command = data.decode("utf-8")
                 if command == "pause":
-                    paused = not paused
+                    paused = True
+                elif command == "resume":
+                    paused = False
+                elif command == "back":
+                    with cap_lock:
+                        current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current - 60))
+                elif command == "forward":
+                    with cap_lock:
+                        current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, current + 60)
 
     threading.Thread(target=handle_messages, daemon=True).start()
 
+    frame_index = 0
     while True:
         if paused:
+            time.sleep(0.01)
             continue
-        ok, frame = cap.read()
+
+        with cap_lock:
+            ok, frame = cap.read()
         if not ok:
             break
+
         frame = cv2.resize(frame, (640, 360))
         success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 30])
         if not success:
             continue
-        sock.sendto(pickle.dumps(encoded), client_addr)
 
-    cap.release()
+        sock.sendto(pickle.dumps((frame_index, encoded)), client_addr)
+        frame_index += 1
 
 def handle_client(client_sock, address, video_sock, videos_directory):
     try:
