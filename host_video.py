@@ -2,25 +2,44 @@ import cv2
 import socket
 import pickle
 import sys
-import json
 import threading
-
 from pathlib import Path
-from itertools import islice
+import time
 
-def stream_video(sock: socket.socket, client_ip: str, directory: str, video_name: str):
-    cap = cv2.VideoCapture((Path(directory) / video_name).absolute())
-    fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
+def stream_video(sock, client_addr, directory, video_name):
+    paused = False
+    cap = cv2.VideoCapture(str((Path(directory) / video_name).absolute()))
+    cap_lock = threading.Lock()
 
+    def handle_messages():
+        nonlocal paused
+        while True:
+            data, addr = sock.recvfrom(1024)
+            if addr == client_addr:
+                command = data.decode("utf-8")
+                if command == "pause":
+                    paused = True
+                elif command == "resume":
+                    paused = False
+                elif command == "back":
+                    with cap_lock:
+                        current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current - 60))
+                elif command == "forward":
+                    with cap_lock:
+                        current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, current + 60)
+
+    threading.Thread(target=handle_messages, daemon=True).start()
+
+    frame_index = 0
     while True:
-        data, addr = sock.recvfrom(1024)
-        data = json.loads(data.decode('utf-8'))
+        if paused:
+            time.sleep(0.01)
+            continue
 
-        if "stop" in data:
-            break
-
-        cap.set(cv2.CAP_PROP_POS_FRAMES, data["frame"])
-        ok, frame = cap.read()
+        with cap_lock:
+            ok, frame = cap.read()
         if not ok:
             break
 
@@ -29,66 +48,42 @@ def stream_video(sock: socket.socket, client_ip: str, directory: str, video_name
         if not success:
             continue
 
-        payload = pickle.dumps(encoded)
-        sock.sendto(payload, (client_ip, addr[1]))
+        sock.sendto(pickle.dumps((frame_index, encoded)), client_addr)
+        frame_index += 1
 
-    cap.release()
-
-def get_videos(directory: str, index: int=0, limit: int=64) -> list[str]:
-    videos = Path(directory)
-    return [video.name for video in islice(videos.iterdir(), index, index + limit)]
-
-def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket, address, videos_directory: str):
+def handle_client(client_sock, address, video_sock, videos_directory):
     try:
         while True:
             data = client_sock.recv(1024)
-            if not data: break
-
-            message = pickle.loads(data)
-            command, args = message[0], tuple(message[1:])
-
-            output = None
-
-            match command:
-                case "DIR":
-                    output = get_videos(videos_directory, int(args[0]), int(args[1]))
-                case "GET":
-                    playback_thread = threading.Thread(target=stream_video, args=(video_sock, address[0], videos_directory, args[0]), daemon=True)
-                    playback_thread.start()
-                    output = video_sock.getsockname()[1]
-                case _:
-                    output = "INVALID"
-
-            client_sock.send(pickle.dumps(output))
+            if not data:
+                break
+            command, arg = pickle.loads(data)
+            if command == "GET":
+                port = video_sock.getsockname()[1]
+                client_sock.send(pickle.dumps(port))
+                client_addr = (address[0], None)
+                def wait_and_stream():
+                    while True:
+                        data, addr = video_sock.recvfrom(1024)
+                        if addr[0] == address[0]:
+                            stream_video(video_sock, addr, videos_directory, arg)
+                            break
+                threading.Thread(target=wait_and_stream, daemon=True).start()
+            else:
+                client_sock.send(pickle.dumps("INVALID"))
     except:
         pass
-
     client_sock.close()
-    print(f"Connection closed with {address}")
 
-def main(host_listen_port: int, videos_directory: str):
-    print("Starting server...")
-
+def main(port, directory):
     control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    control_sock.bind(("", host_listen_port))
-
-    control_sock.listen(10)
-
+    control_sock.bind(("", port))
+    control_sock.listen(5)
     video_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    video_sock.bind(('0.0.0.0', 0)) # Select random port
-    print(f"Established video socket at {video_sock.getsockname()}")
-
-    try:
-        while True:
-            client_sock, address = control_sock.accept()
-            print(f"Accepted connection from {address}!")
-            thread = threading.Thread(target=handle_client_requests, args=(video_sock, client_sock, address, videos_directory), daemon=True)
-            thread.start()
-    except KeyboardInterrupt:
-        pass
-
-    control_sock.close()
-    print("Server closed.")
+    video_sock.bind(("0.0.0.0", 0))
+    while True:
+        client_sock, addr = control_sock.accept()
+        threading.Thread(target=handle_client, args=(client_sock, addr, video_sock, directory), daemon=True).start()
 
 if __name__ == "__main__":
     main(int(sys.argv[1]), sys.argv[2])
