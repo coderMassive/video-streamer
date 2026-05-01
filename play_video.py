@@ -3,7 +3,6 @@ import pickle
 import socket
 import sys
 import json
-import threading
 
 import sounddevice as sd
 
@@ -26,6 +25,8 @@ def video_playback(host_ip, host_port):
     just_fetch = False
     first_frame = False
 
+    stream: sd.OutputStream = None
+
     while True:
         if not paused or just_fetch:
             request = {"frame": int(i)}
@@ -33,17 +34,22 @@ def video_playback(host_ip, host_port):
             sock.sendto(json_bytes, (host_ip, host_port))
 
             data, _ = sock.recvfrom(65536)
+            audio_data, _ = sock.recvfrom(65536)
             encoded = pickle.loads(data)
-            frame = cv2.imdecode(encoded[0], cv2.IMREAD_COLOR)
+            audio_decoded = pickle.loads(audio_data)
+            frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
             just_fetch = False
+            sd.stop()
+
+            if stream is None:
+                stream = sd.OutputStream(samplerate=audio_decoded[1], channels=audio_decoded[2])
+                stream.start()
+            stream.write(audio_decoded[0])
 
         if frame is None:
             continue
 
         cv2.imshow("Frame", frame)
-
-        if not paused:
-            sd.play(encoded[1], encoded[2])
         key = cv2.waitKey(1) & 0xFF
         if key == ord("k"):
             paused = not paused
@@ -74,6 +80,11 @@ def video_playback(host_ip, host_port):
     sock.sendto(json.dumps({"stop": True}).encode(), (host_ip, host_port))
     cv2.destroyAllWindows()
 
+    if stream is not None:
+        stream.stop()
+        stream.close()
+
+
 def main(host_ip, host_port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((host_ip, host_port))
@@ -85,8 +96,7 @@ def main(host_ip, host_port):
                 case ["GET", *args]:
                     sock.send(pickle.dumps(("GET", ' '.join(args))))
                     port = int(pickle.loads(sock.recv(1024)))
-                    video_playback_thread = threading.Thread(target=video_playback, args=(host_ip, port))
-                    video_playback_thread.start()
+                    video_playback(host_ip, port)
                 case ["DIR", *args]:
                     index = args[0] if len(args) > 0 else 0
                     count = args[1] if len(args) > 1 else 64
