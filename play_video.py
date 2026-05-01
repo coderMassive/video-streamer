@@ -30,6 +30,8 @@ def video_playback(host_ip, host_port):
     sock.bind(("0.0.0.0", 0))
     sock.sendto(b"start", (host_ip, host_port))
 
+    stream: sd.OutputStream = None
+
     def receive_frames():
         nonlocal running
 
@@ -52,7 +54,7 @@ def video_playback(host_ip, host_port):
 
                 # Always drain the socket. If cache is full, drop newest arrivals.
                 if len(cache) < max_cache:
-                    cache.append((frame_index, frame, audio_payload[0], audio_payload[1]))
+                    cache.append((frame_index, frame, audio_payload))
 
             except OSError:
                 break
@@ -109,7 +111,7 @@ def video_playback(host_ip, host_port):
             time.sleep(0.001)
             continue
 
-        frame_index, frame, audio_data, audio_frequency = cache.popleft()
+        frame_index, frame, audio_payload = cache.popleft()
 
         if frame_index is not None and last_frame_index is not None:
             if frame_index != last_frame_index + 1:
@@ -119,7 +121,10 @@ def video_playback(host_ip, host_port):
 
         print("cache size:", len(cache))
         cv2.imshow("Frame", frame)
-        sd.play(audio_data, audio_frequency)
+        if stream is None:
+            stream = sd.OutputStream(samplerate=audio_payload[1], channels=audio_payload[2])
+            stream.start()
+        stream.write(audio_payload[0])
 
         key = cv2.waitKey(33) & 0xFF
         if key == ord("k"):
@@ -136,6 +141,10 @@ def video_playback(host_ip, host_port):
             running = False
 
     cv2.destroyAllWindows()
+
+    if stream is not None:
+        stream.stop()
+        stream.close()
 
 
 def main(host_ip, host_port):
