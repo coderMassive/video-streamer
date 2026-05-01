@@ -17,7 +17,7 @@ def stream_video(sock, client_ip, directory, video_name):
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 60
     cap_lock = threading.Lock()
 
-    AUDIO_FREQUENCY = 22050
+    AUDIO_FREQUENCY = 44100
     audio_clip = VideoFileClip(file_path).audio
     audio = audio_clip.to_soundarray(fps=AUDIO_FREQUENCY).astype('float32')
     audio_fps_ratio = AUDIO_FREQUENCY // fps
@@ -39,25 +39,26 @@ def stream_video(sock, client_ip, directory, video_name):
             if (user_addr is None and addr[0] == client_ip) or user_addr == addr:
                 user_addr = addr
                 command = data.decode("utf-8")
-                if command == "pause":
+                if command[:5] == "pause":
                     paused = True
-                elif command == "resume":
+                elif command[:6] == "resume":
+                    with cap_lock:
+                        current = int(command[7:])
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current))
                     paused = False
-                elif command == "back":
+                elif command[:4] == "back":
                     with cap_lock:
-                        current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        current = int(command[5:])
                         cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current - fps * 3))
-                elif command == "forward":
+                elif command[:7] == "forward":
                     with cap_lock:
-                        current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                        current = int(command[8:])
                         cap.set(cv2.CAP_PROP_POS_FRAMES, min(current + fps * 3, cap.get(cv2.CAP_PROP_FRAME_COUNT)))
                 elif command == "stop":
                     halt = True
                     break
 
     threading.Thread(target=handle_messages, daemon=True).start()
-
-    frame_index = 0
     while not halt:
         if paused or not user_addr:
             time.sleep(0.01)
@@ -69,14 +70,13 @@ def stream_video(sock, client_ip, directory, video_name):
             break
 
         frame = cv2.resize(frame, (640, 360))
-        current_frame_id = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-        audio_segment = audio[current_frame_id * audio_fps_ratio:int((current_frame_id + 1)*audio_fps_ratio)]
+        frame_index = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        audio_segment = audio[frame_index * audio_fps_ratio:int((frame_index + 1)*audio_fps_ratio)]
         success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 30])
         if not success:
             continue
 
-        sock.sendto(pickle.dumps((frame_index, encoded, (audio_segment, AUDIO_FREQUENCY, audio_clip.nchannels))), user_addr)
-        frame_index += 1
+        sock.sendto(pickle.dumps((frame_index, encoded, fps, (audio_segment, AUDIO_FREQUENCY, audio_clip.nchannels))), user_addr)
     
     cap.release()
 

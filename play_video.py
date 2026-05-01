@@ -34,27 +34,29 @@ def video_playback(host_ip, host_port):
 
     def receive_frames():
         nonlocal running
+        nonlocal sender_paused
 
         while running:
             try:
                 data, _ = sock.recvfrom(65536)
                 raw_payload = pickle.loads(data)
-                payload = raw_payload[:2]
-                audio_payload = raw_payload[2]
+                payload = raw_payload[:3]
+                audio_payload = raw_payload[3]
 
-                if isinstance(payload, tuple) and len(payload) == 2:
-                    frame_index, encoded = payload
+                if isinstance(payload, tuple) and len(payload) == 3:
+                    frame_index, encoded, fps = payload
                 else:
                     frame_index = None
                     encoded = payload
+                    fps=60
 
                 frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
                 if frame is None:
                     continue
 
                 # Always drain the socket. If cache is full, drop newest arrivals.
-                if len(cache) < max_cache:
-                    cache.append((frame_index, frame, audio_payload))
+                if len(cache) < max_cache and (not sender_paused):
+                    cache.append((frame_index, frame, fps, audio_payload))
 
             except OSError:
                 break
@@ -68,59 +70,44 @@ def video_playback(host_ip, host_port):
     while running and len(cache) < min_cache:
         time.sleep(0.001)
 
-    last_frame_index = None
+    last_frame_index = 0
+
+    def encode_frame_index(offset: int=0):
+        return bytes(str(last_frame_index + (offset if offset is not None else 0)), encoding="utf-8")
+
+    def handle_input(key: int):
+        nonlocal paused, last_frame_index, running
+        if key == ord("k"):
+            paused = not paused
+        elif key == ord("j"):
+            sock.sendto(b"back:" + encode_frame_index(), (host_ip, host_port))
+            cache.clear()
+        elif key == ord("l"):
+            sock.sendto(b"forward:" + encode_frame_index(), (host_ip, host_port))
+            cache.clear()
+        elif key == ord("q"):
+            sock.sendto(b"stop", (host_ip, host_port))
+            running = False
 
     while running:
-        if len(cache) >= max_cache - 5 and not sender_paused:
+        if len(cache) >= max_cache - 10 and not sender_paused:
             sock.sendto(b"pause", (host_ip, host_port))
             sender_paused = True
         elif len(cache) <= min_cache and sender_paused:
-            sock.sendto(b"resume", (host_ip, host_port))
+            sock.sendto(b"resume:" + encode_frame_index(len(cache)), (host_ip, host_port))
             sender_paused = False
 
         if paused:
-            key = cv2.waitKey(30) & 0xFF
-            if key == ord("k"):
-                paused = False
-            elif key == ord("j"):
-                sock.sendto(b"back", (host_ip, host_port))
-                cache.clear()
-                last_frame_index = None
-            elif key == ord("l"):
-                sock.sendto(b"forward", (host_ip, host_port))
-                cache.clear()
-                last_frame_index = None
-            elif key == ord("q"):
-                running = False
+            handle_input(cv2.waitKey(17) & 0xFF)
             continue
 
         if not cache:
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("k"):
-                paused = True
-            elif key == ord("j"):
-                sock.sendto(b"back", (host_ip, host_port))
-                cache.clear()
-                last_frame_index = None
-            elif key == ord("l"):
-                sock.sendto(b"forward", (host_ip, host_port))
-                cache.clear()
-                last_frame_index = None
-            elif key == ord("q"):
-                running = False
-            time.sleep(0.001)
+            handle_input(cv2.waitKey(17) & 0xFF)
             continue
 
-        frame_index, frame, audio_payload = cache.popleft()
-
-        if frame_index is not None and last_frame_index is not None:
-            if frame_index != last_frame_index + 1:
-                print(f"frame jump: {last_frame_index} -> {frame_index}")
-
+        frame_index, frame, fps, audio_payload = cache.popleft()
         last_frame_index = frame_index
 
-        print("cache size:", len(cache))
-        cv2.imshow("Frame", frame)
         if stream is not None and (stream.samplerate != audio_payload[1] or stream.channels != audio_payload[2]):
             stream.stop()
             stream.close()
@@ -129,21 +116,16 @@ def video_playback(host_ip, host_port):
             stream = sd.OutputStream(samplerate=audio_payload[1], channels=audio_payload[2])
             stream.start()
         stream.write(audio_payload[0])
+        cv2.imshow("Frame", frame)
 
-        key = cv2.waitKey(33) & 0xFF
-        if key == ord("k"):
-            paused = True
-        elif key == ord("j"):
-            sock.sendto(b"back", (host_ip, host_port))
-            cache.clear()
-            last_frame_index = None
-        elif key == ord("l"):
-            sock.sendto(b"forward", (host_ip, host_port))
-            cache.clear()
-            last_frame_index = None
-        elif key == ord("q"):
-            sock.sendto(b"stop", (host_ip, host_port))
-            running = False
+        handle_input(cv2.waitKey(max(1, int(1000/fps))) & 0xFF)
+
+        try:
+            if cv2.getWindowProperty("Frame", cv2.WND_PROP_VISIBLE) < 1:
+                sock.sendto(b"stop", (host_ip, host_port))
+                running = False
+        except:
+            break
 
     cv2.destroyAllWindows()
 
