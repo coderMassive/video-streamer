@@ -46,11 +46,11 @@ def stream_video(sock, client_ip, directory, video_name):
                 elif command == "back":
                     with cap_lock:
                         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current - 60))
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current - fps * 3))
                 elif command == "forward":
                     with cap_lock:
                         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, current + 60)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, min(current + fps * 3, cap.get(cv2.CAP_PROP_FRAME_COUNT)))
                 elif command == "stop":
                     halt = True
                     break
