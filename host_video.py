@@ -31,7 +31,7 @@ def stream_video(sock, client_ip, file_path, force_halt: Flag):
         nonlocal user_addr
         nonlocal halt
 
-        while True:
+        while not halt:
             try:
                 data, addr = sock.recvfrom(1024)
             except TimeoutError:
@@ -52,11 +52,13 @@ def stream_video(sock, client_ip, file_path, force_halt: Flag):
                         request = int(command[5:])
                         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                         cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(request, current) - fps * 5))
+                    paused = False
                 elif command[:7] == "forward":
                     with cap_lock:
                         request = int(command[8:])
                         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                         cap.set(cv2.CAP_PROP_POS_FRAMES, min(max(request, current) + fps * 5, int(cap.get(cv2.CAP_PROP_FRAME_COUNT))))
+                    paused = False
                 elif command == "stop":
                     halt = True
                     break
