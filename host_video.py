@@ -9,15 +9,17 @@ from pathlib import Path
 from moviepy import VideoFileClip
 from itertools import islice
 
-def stream_video(sock, client_ip, directory, video_name):
-    file_path = (Path(directory) / video_name).absolute()
+class Flag:
+    value: bool = False
+
+def stream_video(sock, client_ip, file_path, force_halt: Flag):
     paused = False
     halt = False
     cap = cv2.VideoCapture(file_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 60
     cap_lock = threading.Lock()
 
-    AUDIO_FREQUENCY = 22050
+    AUDIO_FREQUENCY = 44100
     audio_clip = VideoFileClip(file_path).audio
     audio = audio_clip.to_soundarray(fps=AUDIO_FREQUENCY).astype('float32')
     audio_fps_ratio = AUDIO_FREQUENCY // fps
@@ -29,8 +31,7 @@ def stream_video(sock, client_ip, directory, video_name):
         nonlocal user_addr
         nonlocal halt
 
-        while True:
-            sock.settimeout(5.0)
+        while not halt:
             try:
                 data, addr = sock.recvfrom(1024)
             except TimeoutError:
@@ -39,44 +40,55 @@ def stream_video(sock, client_ip, directory, video_name):
             if (user_addr is None and addr[0] == client_ip) or user_addr == addr:
                 user_addr = addr
                 command = data.decode("utf-8")
-                if command == "pause":
+                if command[:5] == "pause":
                     paused = True
-                elif command == "resume":
+                elif command[:6] == "resume":
+                    with cap_lock:
+                        current = int(command[7:])
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current))
                     paused = False
-                elif command == "back":
+                elif command[:4] == "back":
                     with cap_lock:
+                        request = int(command[5:])
                         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current - 60))
-                elif command == "forward":
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(request, current) - fps * 5))
+                    paused = False
+                elif command[:7] == "forward":
                     with cap_lock:
+                        request = int(command[8:])
                         current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, current + 60)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, min(max(request, current) + fps * 5, int(cap.get(cv2.CAP_PROP_FRAME_COUNT))))
+                    paused = False
                 elif command == "stop":
                     halt = True
                     break
 
     threading.Thread(target=handle_messages, daemon=True).start()
-
-    frame_index = 0
     while not halt:
+        if force_halt.value:
+            halt = True
+            break
+
         if paused or not user_addr:
             time.sleep(0.01)
             continue
 
         with cap_lock:
             ok, frame = cap.read()
+            frame_index = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            if not ok:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_FRAME_COUNT) - 1)
+                ok, frame = cap.read()
         if not ok:
             break
 
         frame = cv2.resize(frame, (640, 360))
-        current_frame_id = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-        audio_segment = audio[current_frame_id * audio_fps_ratio:int((current_frame_id + 1)*audio_fps_ratio)]
+        audio_segment = audio[frame_index * audio_fps_ratio:int((frame_index + 1)*audio_fps_ratio)]
         success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 30])
         if not success:
             continue
 
-        sock.sendto(pickle.dumps((frame_index, encoded, (audio_segment, AUDIO_FREQUENCY, audio_clip.nchannels))), user_addr)
-        frame_index += 1
+        sock.sendto(pickle.dumps((frame_index, encoded, fps, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), (audio_segment, AUDIO_FREQUENCY, audio_clip.nchannels))), user_addr)
     
     cap.release()
 
@@ -85,6 +97,8 @@ def get_videos(directory: str, index: int=0, limit: int=64) -> list[str]:
     return [video.name for video in islice(videos.iterdir(), index, index + limit)]
 
 def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket, address, videos_directory: str):
+    play_flag = Flag()
+    play_flag.value = False
     try:
         while True:
             data = client_sock.recv(1024)
@@ -99,9 +113,13 @@ def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket
                 case "DIR":
                     output = get_videos(videos_directory, int(args[0]), int(args[1]))
                 case "GET":
-                    playback_thread = threading.Thread(target=stream_video, args=(video_sock, address[0], videos_directory, args[0]), daemon=True)
-                    playback_thread.start()
-                    output = video_sock.getsockname()[1]
+                    file_path: Path = (Path(videos_directory) / args[0]).absolute()
+                    if file_path.exists() and file_path.is_file():
+                        playback_thread = threading.Thread(target=stream_video, args=(video_sock, address[0], file_path, play_flag), daemon=True)
+                        playback_thread.start()
+                        output = video_sock.getsockname()[1]
+                    else:
+                        output = "File does not exist!"
                 case _:
                     output = "INVALID"
 
@@ -109,6 +127,7 @@ def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket
     except:
         pass
 
+    play_flag.value = True
     client_sock.close()
     print(f"Connection closed with {address}")
 
