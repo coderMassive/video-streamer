@@ -16,7 +16,7 @@ def stringed_videos(videos: list[str], start_index: int=0):
     output += f"Got {start_index + 1} to {start_index + len(videos)} video names."
     return output
 
-def video_playback(host_ip, host_port, window_name="Frame"):
+def video_playback(control_sock, sock, window_name="Frame"):
     cache = deque()
     running = True
     paused = False
@@ -25,12 +25,8 @@ def video_playback(host_ip, host_port, window_name="Frame"):
     max_cache = 300
     min_cache = 60
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-    sock.bind(("0.0.0.0", 0))
-    sock.sendto(b"start", (host_ip, host_port))
-
     stream: sd.OutputStream = None
+    control_sock.send(b"start")
 
     def receive_frames():
         nonlocal running, sender_paused
@@ -63,8 +59,6 @@ def video_playback(host_ip, host_port, window_name="Frame"):
             except Exception:
                 continue
 
-        sock.close()
-
     threading.Thread(target=receive_frames, daemon=True).start()
 
     while running and len(cache) < min_cache:
@@ -81,14 +75,13 @@ def video_playback(host_ip, host_port, window_name="Frame"):
             paused = not paused
         elif key == ord("j") and not paused:
             cache.clear()
-            sock.sendto(b"back:" + encode_frame_index(), (host_ip, host_port))
+            control_sock.send(b"back:" + encode_frame_index())
             sender_paused = False
         elif key == ord("l") and not paused:
             cache.clear()
-            sock.sendto(b"forward:" + encode_frame_index(), (host_ip, host_port))
+            control_sock.send(b"forward:" + encode_frame_index())
             sender_paused = False
         elif key == ord("q"):
-            sock.sendto(b"stop", (host_ip, host_port))
             running = False
 
     cv2.namedWindow(window_name, cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_AUTOSIZE)
@@ -96,16 +89,16 @@ def video_playback(host_ip, host_port, window_name="Frame"):
     while running:
         try:
             if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
-                sock.sendto(b"stop", (host_ip, host_port))
                 running = False
+                continue
         except:
             break
 
         if len(cache) >= max_cache and not sender_paused:
-            sock.sendto(b"pause", (host_ip, host_port))
+            control_sock.send(b"pause")
             sender_paused = True
         elif len(cache) <= min_cache and sender_paused:
-            sock.sendto(b"resume:" + encode_frame_index(len(cache)), (host_ip, host_port))
+            control_sock.send(b"resume:" + encode_frame_index(len(cache)))
             sender_paused = False
 
         if paused:
@@ -135,28 +128,29 @@ def video_playback(host_ip, host_port, window_name="Frame"):
         cv2.imshow(window_name, frame)
         stream.write(audio_payload[0])
 
-        handle_input(cv2.waitKey(1) & 0xFF)
+        handle_input(cv2.pollKey() & 0xFF)
 
     cv2.destroyAllWindows()
-
-    if stream is not None:
-        stream.stop()
-        stream.close()
+    control_sock.send(b"stop")
 
 
 def main(host_ip, host_port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((host_ip, host_port))
 
+    video_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    video_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    video_sock.bind(("0.0.0.0", 0))
+
     try:
         while True:
             command = input("> ")
             match command.strip().split():
                 case ["GET", *args]:
-                    sock.send(pickle.dumps(("GET", ' '.join(args))))
-                    message = pickle.loads(sock.recv(1024))
+                    sock.send(pickle.dumps(("GET", video_sock.getsockname()[1], ' '.join(args))))
+                    message = pickle.loads(sock.recv(65536))
                     if type(message) == int:
-                        video_playback(host_ip, int(message), ' '.join(args))
+                        video_playback(sock, video_sock, ' '.join(args))
                     else:
                         print(message)
                 case ["DIR", *args]:
@@ -172,6 +166,7 @@ def main(host_ip, host_port):
     except KeyboardInterrupt:
         pass
 
+    video_sock.close()
     sock.close()
 
 
