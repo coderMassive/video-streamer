@@ -87,6 +87,7 @@ def stream_video(sock, user_addr, client_sock, file_path, force_halt: Flag):
         sock.sendto(pickle.dumps((frame_index, encoded, fps, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), (audio_segment, AUDIO_FREQUENCY, audio_clip.nchannels))), user_addr)
     
     cap.release()
+    audio_clip.close()
 
 def get_videos(directory: str, index: int=0, limit: int=64) -> list[str]:
     videos = Path(directory)
@@ -107,7 +108,17 @@ def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket
 
             match command:
                 case "DIR":
-                    output = get_videos(videos_directory, int(args[0]), int(args[1]))
+                    try:
+                        start_index = int(args[0])
+                        limit = int(args[1])
+                        if (start_index <= 0):
+                            output = "Start index must be greater than 0!"
+                        elif (limit <= 0):
+                            output = "Limit must be greater than 0!"
+                        else:
+                            output = get_videos(videos_directory, start_index - 1, limit)
+                    except ValueError:
+                        output = "Invalid inputs."
                 case "GET":
                     file_path: Path = (Path(videos_directory) / args[1]).absolute()
                     if file_path.exists() and file_path.is_file():
@@ -121,8 +132,7 @@ def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket
 
             if output is not None:
                 client_sock.send(pickle.dumps(output))
-    except Exception as e:
-        raise e
+    except:
         pass
 
     play_flag.value = True

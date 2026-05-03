@@ -13,7 +13,7 @@ def stringed_videos(videos: list[str], start_index: int=0):
 
     for i, video in enumerate(videos):
         output += f"{start_index + i + 1}: {video}\n"
-    output += f"Got {start_index + 1} to {start_index + len(videos)} video names."
+    output += f"Got {start_index + 1} to {start_index + len(videos)} video names." if len(videos) > 0 else "Got no videos."
     return output
 
 def video_playback(control_sock, sock, window_name="Frame"):
@@ -154,11 +154,14 @@ def main(host_ip, host_port):
                     else:
                         print(message)
                 case ["DIR", *args]:
-                    index = args[0] if len(args) > 0 else 0
+                    index = args[0] if len(args) > 0 else 1
                     count = args[1] if len(args) > 1 else 64
                     sock.send(pickle.dumps(("DIR", index, count)))
                     message = pickle.loads(sock.recv(65536))
-                    print(stringed_videos(message, index))
+                    if type(message) == list:
+                        print(stringed_videos(message, int(index) - 1))
+                    else:
+                        print(message)
                 case ["EXIT"]:
                     break
                 case _:
