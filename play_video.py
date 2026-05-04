@@ -16,6 +16,11 @@ def stringed_videos(videos: list[str], start_index: int=0):
     output += f"Got {start_index + 1} to {start_index + len(videos)} video names." if len(videos) > 0 else "Got no videos."
     return output
 
+def calculate_duration_to_string(frame, fps):
+    minutes, frames = divmod(frame, fps * 60)
+    seconds, frames = divmod(frames, fps)
+    return f"{minutes}:{str(seconds).zfill(2)}:{f"{(int(frames / fps * 1000) / 1000):.3f}"[2:]}"
+
 def video_playback(control_sock, sock, window_name="Frame"):
     cache = deque()
     running = True
@@ -109,7 +114,7 @@ def video_playback(control_sock, sock, window_name="Frame"):
             handle_input(cv2.waitKey(17) & 0xFF)
             continue
 
-        frame_index, frame, _, num_frames, audio_payload = cache.popleft()
+        frame_index, frame, fps, num_frames, audio_payload = cache.popleft()
         last_frame_index = frame_index
 
         if stream is not None and (stream.samplerate != audio_payload[1] or stream.channels != audio_payload[2]):
@@ -125,6 +130,13 @@ def video_playback(control_sock, sock, window_name="Frame"):
         p3 = int(frame.shape[1] * (frame_index + len(cache)) / num_frames), frame.shape[0]-5
         cv2.line(frame, p1, p3, (100,100,100), 10)
         cv2.line(frame, p1, p2, (0,0,255), 10)
+
+        frame = cv2.copyMakeBorder(frame, 0, 24, 0, 0, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+        cv2.putText(frame, calculate_duration_to_string(frame_index, fps), (p1[0] + 5, p1[1] + 5 + 20), cv2.FONT_HERSHEY_DUPLEX, 0.75, (0,0,0), 1)
+        duration_text = calculate_duration_to_string(num_frames, fps)
+        size, _ = cv2.getTextSize(duration_text, cv2.FONT_HERSHEY_DUPLEX, 0.75, 1)
+        cv2.putText(frame, calculate_duration_to_string(num_frames, fps), (frame.shape[1] - size[0] - 5, p3[1] + 5 + 20), cv2.FONT_HERSHEY_DUPLEX, 0.75, (0,0,0), 1)
+
         cv2.imshow(window_name, frame)
         stream.write(audio_payload[0])
 

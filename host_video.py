@@ -13,7 +13,7 @@ class Flag:
     value: bool = False
 
 def stream_video(sock, user_addr, client_sock, file_path, force_halt: Flag):
-    paused = False
+    paused = True
     halt = False
     cap = cv2.VideoCapture(file_path)
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 60
@@ -38,7 +38,9 @@ def stream_video(sock, user_addr, client_sock, file_path, force_halt: Flag):
                 halt = True
                 break
             command = data.decode("utf-8")
-            if command[:5] == "pause":
+            if command[:5] == "start":
+                paused = False
+            elif command[:5] == "pause":
                 paused = True
             elif command[:6] == "resume":
                 with cap_lock:
