@@ -4,6 +4,7 @@ import pickle
 import sys
 import threading
 import time
+import re
 
 from pathlib import Path
 from moviepy import AudioFileClip
@@ -44,27 +45,27 @@ def stream_video(sock, user_addr, client_sock, file_path, force_halt: Flag):
                 paused = True
             elif command[:6] == "resume":
                 with cap_lock:
-                    current = int(command[7:])
+                    current = int(re.match(r"\d+", command[7:]).group(0))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, current))
                 paused = False
             elif command[:4] == "back":
                 with cap_lock:
-                    request = int(command[5:])
+                    request = int(re.match(r"\d+", command[5:]).group(0))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, request - fps * 5))
                 paused = False
             elif command[:7] == "forward":
                 with cap_lock:
-                    request = int(command[8:])
+                    request = int(re.match(r"\d+", command[8:]).group(0))
                     cap.set(cv2.CAP_PROP_POS_FRAMES, min(request + fps * 5, int(cap.get(cv2.CAP_PROP_FRAME_COUNT))))
                 paused = False
             elif command == "stop":
                 halt = True
                 break
 
-    msg_thread = threading.Thread(target=handle_messages, daemon=True)
+    msg_thread = threading.Thread(target=handle_messages)
     msg_thread.start()
 
-    while not halt:
+    while not halt and msg_thread.is_alive():
         if force_halt.value:
             halt = True
             break
@@ -96,8 +97,8 @@ def get_videos(directory: str, index: int=0, limit: int=64) -> list[str]:
     return [video.name for video in islice(videos.iterdir(), index, index + limit)]
 
 def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket, address, videos_directory: str):
-    play_flag = Flag()
-    play_flag.value = False
+    halt_flag = Flag()
+    halt_flag.value = False
     try:
         while True:
             data = client_sock.recv(1024)
@@ -125,7 +126,11 @@ def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket
                     file_path: Path = (Path(videos_directory) / args[1]).absolute()
                     if file_path.exists() and file_path.is_file():
                         client_sock.send(pickle.dumps(0))
-                        stream_video(video_sock, (address[0], args[0]), client_sock, file_path, play_flag)
+                        halt_flag.value = False
+                        try:
+                            stream_video(video_sock, (address[0], args[0]), client_sock, file_path, halt_flag)
+                        except:
+                            halt_flag.value = True
                         output = None
                     else:
                         output = "File does not exist!"
@@ -137,7 +142,7 @@ def handle_client_requests(video_sock: socket.socket, client_sock: socket.socket
     except:
         pass
 
-    play_flag.value = True
+    halt_flag.value = True
     client_sock.close()
     print(f"Connection closed with {address}")
 
